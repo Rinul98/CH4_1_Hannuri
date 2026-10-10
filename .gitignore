@@ -1,0 +1,18 @@
+# UE 자동 생성물
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+.vs/
+
+# Visual Studio 프로젝트 파일 (자동 생성)
+*.sln
+*.suo
+*.VC.db
+*.VC.opendb
+
+# OS / 기타
+Thumbs.db
+.claude/
+*.zip
