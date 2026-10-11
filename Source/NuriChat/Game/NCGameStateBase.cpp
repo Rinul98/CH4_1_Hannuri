@@ -1,4 +1,4 @@
-// CXGameStateBase.cpp
+// NCGameStateBase.cpp
 
 
 #include "NCGameStateBase.h"
