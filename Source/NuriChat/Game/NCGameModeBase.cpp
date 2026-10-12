@@ -16,7 +16,7 @@ void ANCGameModeBase::OnPostLogin(AController* NewPlayer)
 	if (IsValid(NCPlayerController) == true)
 	{
 
-		NCPlayerController->NotificationText = FText::FromString(TEXT("Connected to the game server."));
+		NCPlayerController->NotificationText = FText::FromString(TEXT("야구게임 시작! 1~9 중 서로 다른 숫자 3개를 맞혀보세요."));
 
 		AllPlayerControllers.Add(NCPlayerController);
 
@@ -167,6 +167,13 @@ void ANCGameModeBase::PrintChatMessageString(ANCPlayerController* InChattingPlay
 
 	if (IsGuessNumberString(GuessNumberString) == true) //게스넘버가 맞으면?
 	{
+		// 승리/무승부 후 재시작 대기 중이면 받지 않음
+		if (GetWorldTimerManager().IsTimerActive(RestartTimerHandle) == true)
+		{
+			InChattingPlayerController->ClientRPCPrintChatMessageString(TEXT("곧 새 게임이 시작됩니다. 잠시만 기다려 주세요."));
+			return;
+		}
+
 		// 보낸 사람의 PlayerState를 꺼내서 기회가 남았는지 확인 (서버에서 막아야 클라 조작으로 못 뚫음)
 		ANCPlayerState* ChattingPlayerState = InChattingPlayerController->GetPlayerState<ANCPlayerState>();
 		if (IsValid(ChattingPlayerState) == true && ChattingPlayerState->CurrentGuessCount >= ChattingPlayerState->MaxGuessCount)
@@ -247,6 +254,8 @@ void ANCGameModeBase::ResetGame() // 정답숫자 바꿔주고 게스카운트 �
 			NCPS->CurrentGuessCount = 0;
 		}
 	}
+
+	CurrentTurnIndex = -1; // 다음 턴 타이머 때 "야구게임 시작!" 공지 + 첫 차례부터 다시 시작
 }
 
 void ANCGameModeBase::JudgeGame(ANCPlayerController* InChattingPlayerController, int InStrikeCount)
@@ -256,14 +265,15 @@ void ANCGameModeBase::JudgeGame(ANCPlayerController* InChattingPlayerController,
 		ANCPlayerState* NCPS = InChattingPlayerController->GetPlayerState<ANCPlayerState>();
 		if (IsValid(NCPS) == true)
 		{
-			FString CombinedMessageString = NCPS->PlayerNameString + TEXT(" 님이 승리했습니다! 새 게임을 시작합니다.");
+			FString CombinedMessageString = NCPS->PlayerNameString + FString::Printf(TEXT(" 님이 승리했습니다! %d초 후 재시작됩니다."), FMath::RoundToInt(RestartDelay));
 			for (const auto& NCPlayerController : AllPlayerControllers)
 			{
 				NCPlayerController->NotificationText = FText::FromString(CombinedMessageString); // 알림은 모두에게
 			}
 		}
 
-		ResetGame(); // 반복문 밖에서 한 번만 재시작
+		// RestartDelay초 뒤에 한 번만 재시작 (기다리는 동안 입력과 턴 시간은 멈춤)
+		GetWorldTimerManager().SetTimer(RestartTimerHandle, this, &ThisClass::ResetGame, RestartDelay, false);
 	}
 	else
 	{
@@ -282,10 +292,10 @@ void ANCGameModeBase::JudgeGame(ANCPlayerController* InChattingPlayerController,
 		{
 			for (const auto& NCPlayerController : AllPlayerControllers)
 			{
-				NCPlayerController->NotificationText = FText::FromString(TEXT("무승부입니다. 새 게임을 시작합니다."));
+				NCPlayerController->NotificationText = FText::FromString(FString::Printf(TEXT("무승부입니다. %d초 후 재시작됩니다."), FMath::RoundToInt(RestartDelay)));
 			}
 
-			ResetGame(); // 반복문 밖에서 한 번만 재시작
+			GetWorldTimerManager().SetTimer(RestartTimerHandle, this, &ThisClass::ResetGame, RestartDelay, false);
 		}
 	}
 }
@@ -296,6 +306,11 @@ void ANCGameModeBase::OnTurnTimerElapsed()
 	if (IsValid(NCGameStateBase) == false || AllPlayerControllers.Num() == 0)
 	{
 		return; // 아직 아무도 없으면 시간 안 흐름
+	}
+
+	if (GetWorldTimerManager().IsTimerActive(RestartTimerHandle) == true)
+	{
+		return; // 재시작 대기 중에는 턴 시간 멈춤
 	}
 
 	// 첫 접속 후 처음 도는 타이머면 첫 턴 시작
