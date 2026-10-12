@@ -4,6 +4,7 @@
 #include "NCGameStateBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Player/NCPlayerController.h"
+#include "Net/UnrealNetwork.h"
 
 void ANCGameStateBase::MulticastRPCBroadcastLoginMessage_Implementation(const FString& InNameString)
 {
@@ -20,4 +21,12 @@ void ANCGameStateBase::MulticastRPCBroadcastLoginMessage_Implementation(const FS
 			}
 		}
 	}
+}
+
+void ANCGameStateBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ThisClass, RemainingTurnTime);
+	DOREPLIFETIME(ThisClass, CurrentTurnPlayerName);
 }

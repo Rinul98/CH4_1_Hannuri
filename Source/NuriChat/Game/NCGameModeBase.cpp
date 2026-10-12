@@ -6,6 +6,7 @@
 #include "Player/NCPlayerController.h"
 #include "EngineUtils.h"
 #include "Player/NCPlayerState.h"
+#include "TimerManager.h"
 
 void ANCGameModeBase::OnPostLogin(AController* NewPlayer)
 {
@@ -130,6 +131,9 @@ void ANCGameModeBase::BeginPlay()
 
 	SecretNumberString = GenerateSecretNumber();
 	UE_LOG(LogTemp, Error, TEXT("%s"), *SecretNumberString)
+
+	// 1초마다 OnTurnTimerElapsed 호출 (강의 08장 MainTimer 패턴)
+	GetWorldTimerManager().SetTimer(TurnTimerHandle, this, &ThisClass::OnTurnTimerElapsed, 1.0f, true);
 }
 
 void ANCGameModeBase::PrintChatMessageString(ANCPlayerController* InChattingPlayerController, const FString& InChatMessageString)
@@ -171,6 +175,17 @@ void ANCGameModeBase::PrintChatMessageString(ANCPlayerController* InChattingPlay
 			InChattingPlayerController->ClientRPCPrintChatMessageString(TEXT("기회를 모두 사용했습니다. 다음 게임을 기다려 주세요."));
 			return; // 판정, 시도 횟수 증가, 전체 방송 모두 하지 않고 끝냄
 		}
+
+		// 턴 검사: 내 차례가 아니거나, 이번 턴에 이미 입력했거나, 0초면 서버가 받지 않음
+		ANCGameStateBase* NCGameStateBase = GetGameState<ANCGameStateBase>();
+		bool bIsMyTurn = AllPlayerControllers.IsValidIndex(CurrentTurnIndex) == true && AllPlayerControllers[CurrentTurnIndex] == InChattingPlayerController;
+		if (bIsMyTurn == false || bHasGuessedThisTurn == true || (IsValid(NCGameStateBase) == true && NCGameStateBase->RemainingTurnTime <= 0))
+		{
+			FString TurnPlayerName = IsValid(NCGameStateBase) == true ? NCGameStateBase->CurrentTurnPlayerName : FString();
+			InChattingPlayerController->ClientRPCPrintChatMessageString(TEXT("지금은 입력할 수 없습니다. (현재 차례: ") + TurnPlayerName + TEXT(")"));
+			return;
+		}
+		bHasGuessedThisTurn = true; // 활동 체크: 이번 턴에 입력함 → 다음 타이머 때 차례가 넘어감
 
 		FString JudgeResultString = JudgeResult(SecretNumberString, GuessNumberString);
 
@@ -241,7 +256,7 @@ void ANCGameModeBase::JudgeGame(ANCPlayerController* InChattingPlayerController,
 		ANCPlayerState* NCPS = InChattingPlayerController->GetPlayerState<ANCPlayerState>();
 		if (IsValid(NCPS) == true)
 		{
-			FString CombinedMessageString = NCPS->PlayerNameString + TEXT(" 님이 승리했습니다!");
+			FString CombinedMessageString = NCPS->PlayerNameString + TEXT(" 님이 승리했습니다! 새 게임을 시작합니다.");
 			for (const auto& NCPlayerController : AllPlayerControllers)
 			{
 				NCPlayerController->NotificationText = FText::FromString(CombinedMessageString); // 알림은 모두에게
@@ -273,4 +288,83 @@ void ANCGameModeBase::JudgeGame(ANCPlayerController* InChattingPlayerController,
 			ResetGame(); // 반복문 밖에서 한 번만 재시작
 		}
 	}
+}
+
+void ANCGameModeBase::OnTurnTimerElapsed()
+{
+	ANCGameStateBase* NCGameStateBase = GetGameState<ANCGameStateBase>();
+	if (IsValid(NCGameStateBase) == false || AllPlayerControllers.Num() == 0)
+	{
+		return; // 아직 아무도 없으면 시간 안 흐름
+	}
+
+	// 첫 접속 후 처음 도는 타이머면 첫 턴 시작
+	if (CurrentTurnIndex == -1)
+	{
+		for (const auto& NCPlayerController : AllPlayerControllers)
+		{
+			NCPlayerController->NotificationText = FText::FromString(TEXT("야구게임 시작! 1~9 중 서로 다른 숫자 3개를 맞혀보세요."));
+		}
+
+		MoveToNextTurn();
+		return;
+	}
+
+	// 이번 턴에 숫자를 입력했으면 다음 사람 차례
+	if (bHasGuessedThisTurn == true)
+	{
+		MoveToNextTurn();
+		return;
+	}
+
+	NCGameStateBase->RemainingTurnTime--;
+	if (NCGameStateBase->RemainingTurnTime > 0)
+	{
+		return;
+	}
+
+	// 입력 없이 시간이 끝남 → 기회 1회 차감
+	if (AllPlayerControllers.IsValidIndex(CurrentTurnIndex) == true)
+	{
+		ANCPlayerController* TurnPlayerController = AllPlayerControllers[CurrentTurnIndex];
+		if (IsValid(TurnPlayerController) == true)
+		{
+			IncreaseGuessCount(TurnPlayerController);
+			TurnPlayerController->ClientRPCPrintChatMessageString(TEXT("시간 초과! 기회 1회가 차감됩니다."));
+			JudgeGame(TurnPlayerController, 0); // 모두 기회를 다 썼으면 무승부 처리
+		}
+	}
+
+	MoveToNextTurn();
+}
+
+void ANCGameModeBase::MoveToNextTurn()
+{
+	ANCGameStateBase* NCGameStateBase = GetGameState<ANCGameStateBase>();
+	if (IsValid(NCGameStateBase) == false || AllPlayerControllers.Num() == 0)
+	{
+		return;
+	}
+
+	// 다음 칸부터 한 바퀴 돌면서 기회가 남은 사람을 찾음 (다 쓴 사람, 나간 사람은 건너뜀)
+	for (int32 Step = 1; Step <= AllPlayerControllers.Num(); ++Step)
+	{
+		int32 NextIndex = (CurrentTurnIndex + Step) % AllPlayerControllers.Num();
+		ANCPlayerController* NextPlayerController = AllPlayerControllers[NextIndex];
+		if (IsValid(NextPlayerController) == false)
+		{
+			continue;
+		}
+
+		ANCPlayerState* NextPlayerState = NextPlayerController->GetPlayerState<ANCPlayerState>();
+		if (IsValid(NextPlayerState) == true && NextPlayerState->CurrentGuessCount < NextPlayerState->MaxGuessCount)
+		{
+			CurrentTurnIndex = NextIndex;
+			NCGameStateBase->CurrentTurnPlayerName = NextPlayerState->PlayerNameString;
+			break;
+		}
+	}
+
+	NCGameStateBase->RemainingTurnTime = TurnTimeLimit; // 새 턴 시간 채우기
+	bHasGuessedThisTurn = false; // 활동 체크 초기화
 }
